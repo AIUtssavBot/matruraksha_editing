@@ -13,8 +13,11 @@ logger = logging.getLogger(__name__)
 
 # Initialize Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = SUPABASE_SERVICE_KEY or os.getenv("SUPABASE_KEY")
+
+# Use service role key if available to bypass RLS for server-side inserts
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 
 async def get_mothers_by_telegram_id(telegram_chat_id: str) -> List[Dict[str, Any]]:

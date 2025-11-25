@@ -36,6 +36,7 @@ bot_running = False
 # ==================== ENVIRONMENT VALIDATION ====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -53,7 +54,8 @@ if not GEMINI_API_KEY:
     GEMINI_API_KEY = None
 
 try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    effective_key = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
+    supabase: Client = create_client(SUPABASE_URL, effective_key)
     logger.info("✅ Supabase client initialized")
 except Exception as e:
     logger.error(f"❌ Supabase initialization error: {e}")
@@ -190,7 +192,10 @@ def run_telegram_bot():
                 AWAITING_GRAVIDA: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_gravida)],
                 AWAITING_PARITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_parity)],
                 AWAITING_BMI: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_bmi)],
-                AWAITING_LANGUAGE: [CallbackQueryHandler(bot.receive_language, pattern="^lang_")],
+                AWAITING_LANGUAGE: [
+                    CallbackQueryHandler(bot.receive_language, pattern="^lang_"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_language),
+                ],
                 CONFIRM_REGISTRATION: [CallbackQueryHandler(bot.confirm_registration, pattern="^confirm_")]
             },
             fallbacks=[CommandHandler('cancel', bot.cancel_registration)],

@@ -118,18 +118,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mothers = await get_mothers_by_telegram_id(chat_id)
     if not mothers:
-        await update.message.reply_text(
-            "👋 Welcome to MatruRaksha AI!\n\n"
-            "It looks like you haven't registered yet. Use /register to add your profile "
-            "or tap the *Register Mother* button below.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
         context.user_data["mothers_list"] = []
         context.user_data.pop("active_mother", None)
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🆕 Register Mother", callback_data="register_new")]
         ])
-        await update.message.reply_text("Ready to onboard a mother?", reply_markup=keyboard)
+        text = (
+            "👋 Welcome to MatruRaksha AI!\n\n"
+            "It looks like you haven't registered yet.\n\n"
+            f"🆔 Your Telegram Chat ID: `{chat_id}`\n\n"
+            "Tap the button below to register as a new mother or use /register."
+        )
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         return
 
     context.user_data["mothers_list"] = mothers
@@ -156,9 +156,8 @@ async def send_home_dashboard(
     as_new_message: bool = False,
 ) -> None:
     """Send or refresh the home dashboard with profile highlights and actions."""
-    chat_id = context.user_data.get("chat_id") or (
-        str(update.effective_chat.id) if update.effective_chat else None
-    )
+    chat = getattr(update, "effective_chat", None) or getattr(update, "chat", None)
+    chat_id = context.user_data.get("chat_id") or (str(chat.id) if chat else None)
 
     if mothers is None:
         if chat_id:
@@ -171,10 +170,12 @@ async def send_home_dashboard(
         mother = context.user_data.get("active_mother") or (mothers[0] if mothers else None)
 
     if not mother:
-        await update.effective_chat.send_message(
-            "It looks like no mother profile is linked to this chat yet. Use /register to create one.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        if chat_id:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="It looks like no mother profile is linked to this chat yet. Use /register to create one.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
         return
 
     context.user_data["active_mother"] = mother
@@ -202,7 +203,7 @@ async def send_home_dashboard(
 
     text = "\n".join(filter(None, lines))
 
-    if update.callback_query and not as_new_message:
+    if getattr(update, "callback_query", None) and not as_new_message:
         await update.callback_query.message.edit_text(
             text,
             parse_mode=ParseMode.MARKDOWN,
@@ -210,12 +211,14 @@ async def send_home_dashboard(
             disable_web_page_preview=True,
         )
     else:
-        await update.effective_chat.send_message(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard,
-            disable_web_page_preview=True,
-        )
+        if chat_id:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
 
 
 async def handle_home_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -707,19 +710,39 @@ async def finalize_registration(target, context: ContextTypes.DEFAULT_TYPE):
     }
 
     try:
-        res = supabase.table("mothers").insert(payload).execute()
-        # // Clear registration state flags and temp data
-        context.chat_data['registration_active'] = False
-        context.chat_data['agents_suspended'] = False
-        context.user_data.pop('registration_data', None)
-
-        await target.reply_text("✅ Registration saved! Loading your dashboard...")
-        mothers = await get_mothers_by_telegram_id(chat_id) if callable(get_mothers_by_telegram_id) else None
-        await send_home_dashboard(target, context, mother=(res.data[0] if hasattr(res, 'data') and res.data else None), mothers=mothers, as_new_message=True)
+        api_url = f"{BACKEND_API_BASE_URL}/mothers/register"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(api_url, json=payload) as resp:
+                ok = resp.status in (200, 201)
+                body = await resp.json(content_type=None)
+                if ok and body.get("status") == "success":
+                    saved = body.get("data") or {}
+                    context.chat_data['registration_active'] = False
+                    context.chat_data['agents_suspended'] = False
+                    context.user_data.pop('registration_data', None)
+                    await target.reply_text("✅ Registration saved! Loading your dashboard...")
+                    mothers = await get_mothers_by_telegram_id(chat_id) if callable(get_mothers_by_telegram_id) else None
+                    await send_home_dashboard(target, context, mother=saved, mothers=mothers, as_new_message=True)
+                    return ConversationHandler.END
+                else:
+                    logger.warning(f"Backend register failed: status={resp.status} body={body}")
+        try:
+            res = supabase.table("mothers").insert(payload).execute()
+            saved = res.data[0] if hasattr(res, 'data') and res.data else None
+            context.chat_data['registration_active'] = False
+            context.chat_data['agents_suspended'] = False
+            context.user_data.pop('registration_data', None)
+            await target.reply_text("✅ Registration saved! Loading your dashboard...")
+            mothers = await get_mothers_by_telegram_id(chat_id) if callable(get_mothers_by_telegram_id) else None
+            await send_home_dashboard(target, context, mother=saved, mothers=mothers, as_new_message=True)
+        except Exception as db_exc:
+            logger.error(f"Registration save failed via Supabase: {db_exc}", exc_info=True)
+            await target.reply_text("⚠️ Could not save registration right now. Please try again later.")
+        return ConversationHandler.END
     except Exception as exc:
-        logger.error(f"Registration save failed: {exc}", exc_info=True)
+        logger.error(f"Registration flow error: {exc}", exc_info=True)
         await target.reply_text("⚠️ Could not save registration right now. Please try again later.")
-    return ConversationHandler.END
+        return ConversationHandler.END
 
 # === Confirm registration callback ===
 async def confirm_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
